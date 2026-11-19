@@ -74,6 +74,41 @@ check("GET chain", st == 200 and body["waybill_id"] == "AWB-SMOKE")
 st, body = call("GET", "/api/waybills")
 check("list waybills", st == 200 and any(w["id"] == "AWB-SMOKE" for w in body["waybills"]))
 
+# --- evidence package export / import -------------------------------------
+st, pkg = call("GET", "/api/waybills/AWB-SMOKE/evidence")
+check("export evidence", st == 200 and pkg["digest"].startswith("sha256:"), pkg.get("digest"))
+check("export format", pkg["format"] == "custody-evidence/v1")
+check("export origin", pkg["origin_party"] == "ORIG")
+# full history: S1r1, S2r1, S3r1, S3r2(W), S3r3, S4r1, S5r1
+check("export carries all revisions", len(pkg["revisions"]) == 7, len(pkg["revisions"]))
+check("export embeds chain", pkg["chain"]["break_reason"] == "SIMULTANEOUS")
+
+# re-import into the same archive: fully idempotent no-op, merged chain returned
+st, body = call("POST", "/api/evidence/import", pkg)
+check("re-import idempotent", st == 200 and body["imported_revisions"] == 0
+      and body["already_present"] == 7, body)
+check("merged chain returned", body["chain"]["waybill_id"] == "AWB-SMOKE"
+      and body["chain"]["break_reason"] == "SIMULTANEOUS")
+
+# tampered package -> 422, archive untouched
+import copy
+bad = copy.deepcopy(pkg)
+bad["revisions"][0]["receiver"] = "TAMPERED"
+st, body = call("POST", "/api/evidence/import", bad)
+check("tampered package -> 422", st == 422 and body["error"] == "package_integrity", body)
+bad2 = copy.deepcopy(pkg)
+bad2["chain"]["current_custodian"] = "FORGED"
+st, body = call("POST", "/api/evidence/import", bad2)
+check("forged chain -> 422", st == 422, body)
+st, body = call("GET", "/api/waybills/AWB-SMOKE/chain")
+check("chain unchanged after bad imports", st == 200 and body["current_custodian"] == "D")
+
+# origin mismatch on an existing waybill -> 409
+bad3 = copy.deepcopy(pkg)
+bad3["origin_party"] = "OTHER"
+st, body = call("POST", "/api/evidence/import", bad3)
+check("origin mismatch -> 422/409", st in (409, 422), st)
+
 st, body = call("GET", "/docs", raw=True)
 check("swagger docs reachable", st == 200 and b"swagger" in body.lower())
 st, body = call("GET", "/openapi.json")

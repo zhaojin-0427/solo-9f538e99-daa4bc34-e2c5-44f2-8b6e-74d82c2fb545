@@ -75,6 +75,22 @@
   </div>
 
   <div class="card">
+    <h2>4. 导出证据包（同一已提交快照）</h2>
+    <label>运单号</label>
+    <div class="row"><input id="export-wb" value="AWB-001" />
+      <button onclick="exportEvidence()" style="margin-top:0">导出</button></div>
+    <div class="hint">包含运单号、起始保管方、全部修订与撤回、可信链及确定性摘要；导出结果会填入右侧导入框，可存档或转入另一库。</div>
+  </div>
+
+  <div class="card">
+    <h2>5. 导入证据包（原子并入本库）</h2>
+    <label>证据包 JSON</label>
+    <textarea id="package-json" placeholder='粘贴 GET /api/waybills/{id}/evidence 的导出结果'></textarea>
+    <div class="hint">导入前核对摘要、修订唯一性与包内重算可信链；起始方不符或同修订异文将整包拒绝，本库不留部分修订。</div>
+    <button onclick="importEvidence()">导入并合并</button>
+  </div>
+
+  <div class="card">
     <h2>原始响应</h2>
     <pre id="raw">（提交或查询后显示）</pre>
   </div>
@@ -116,6 +132,21 @@ async function queryChain() {
     const data = await call(`/api/waybills/${encodeURIComponent($('query-wb').value.trim())}/chain`, 'GET');
     setStatus('查询完成'); renderChain(data);
   } catch (e) { setStatus('查询失败：' + e.message, true); }
+}
+async function exportEvidence() {
+  try {
+    const data = await call(`/api/waybills/${encodeURIComponent($('export-wb').value.trim())}/evidence`, 'GET');
+    $('package-json').value = JSON.stringify(data, null, 2);
+    setStatus(`证据包已导出：${data.revisions.length} 条修订，摘要 ${data.digest.slice(0, 23)}…`);
+  } catch (e) { setStatus('导出失败：' + e.message, true); }
+}
+async function importEvidence() {
+  try {
+    const body = JSON.parse($('package-json').value);
+    const data = await call('/api/evidence/import', 'POST', body);
+    setStatus(`导入完成：新补入 ${data.imported_revisions} 条，已存在 ${data.already_present} 条（重试无副作用）`);
+    renderChain(data.chain);
+  } catch (e) { setStatus('导入被拒绝（本库未改动）：' + e.message, true); }
 }
 function esc(s) { return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function renderChain(c) {

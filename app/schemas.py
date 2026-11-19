@@ -163,6 +163,49 @@ class BatchResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Evidence packages (offline-archive export / import)
+# --------------------------------------------------------------------------- #
+EVIDENCE_FORMAT = "custody-evidence/v1"
+
+
+class EvidencePackage(BaseModel):
+    """离线证据包：运单号、起始保管方、全部扫描修订（含撤回）、可信链与确定性摘要。
+
+    ``digest`` 覆盖 ``format`` / ``waybill_id`` / ``origin_party`` 以及规范化后
+    按 ``(scan_id, revision)`` 排序的全部修订；导入侧据此核对包完整性，
+    并重算 ``revisions`` 对应的可信链与内嵌 ``chain`` 比对。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    format: Literal["custody-evidence/v1"] = EVIDENCE_FORMAT
+    waybill_id: str = Field(min_length=1)
+    origin_party: str = Field(min_length=1)
+    revisions: list[ScanEntry] = Field(
+        default_factory=list,
+        description="全部修订历史（含被更高修订覆盖的版本与撤回墓碑），不止当前生效版本",
+    )
+    chain: ChainResponse
+    digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @field_validator("waybill_id", "origin_party")
+    @classmethod
+    def _strip_nonempty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("must not be empty")
+        return v
+
+
+class EvidenceImportResponse(BaseModel):
+    waybill_id: str
+    digest: str
+    imported_revisions: int = Field(description="本次新补入的修订条数")
+    already_present: int = Field(description="本库已存在且内容完全一致的修订条数（幂等部分）")
+    chain: ChainResponse = Field(description="合并完成后的可信链")
+
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 def utcnow_iso() -> str:
@@ -193,3 +236,29 @@ def payload_hash_of(payload: dict) -> str:
 
 def entry_payload_hash(entry: ScanEntry) -> str:
     return payload_hash_of(canonical_payload(entry))
+
+
+def canonical_revision(entry: ScanEntry) -> dict:
+    """Deterministic per-revision representation used by the evidence digest."""
+    return {
+        "scan_id": entry.scan_id,
+        "revision": entry.revision,
+        **canonical_payload(entry),
+    }
+
+
+def evidence_digest(
+    waybill_id: str, origin_party: str, revisions: list[ScanEntry]
+) -> str:
+    """确定性摘要：规范化修订按 (scan_id, revision) 排序后的 SHA-256。
+
+    同一逻辑内容在任何库中重算都得到同一摘要，与导出先后、字段顺序无关。
+    """
+    ordered = sorted(revisions, key=lambda e: (e.scan_id, e.revision))
+    payload = {
+        "format": EVIDENCE_FORMAT,
+        "waybill_id": waybill_id,
+        "origin_party": origin_party,
+        "revisions": [canonical_revision(e) for e in ordered],
+    }
+    return "sha256:" + payload_hash_of(payload)
